@@ -1,21 +1,22 @@
 //! micro:bit v2 remote for a Tenka Circuit Cube.
 //!
-//! Holding button A runs motor b; holding button B runs motor c.
+//! Holding button A runs motor b; holding button B runs motor c. Clapping toggles motor b.
 
 #![no_std]
 #![no_main]
 
 mod ble;
 mod buttons;
+mod clap;
 mod motor;
 
 use defmt::unwrap;
 use embassy_executor::Spawner;
-use embassy_nrf::gpio::{Input, Pull};
-use embassy_nrf::interrupt::Priority;
+use embassy_nrf::gpio::{Input, Level, Output, OutputDrive, Pull};
+use embassy_nrf::interrupt::{InterruptExt, Priority};
 use embassy_nrf::mode::Async;
 use embassy_nrf::peripherals::RNG;
-use embassy_nrf::{bind_interrupts, pac, rng};
+use embassy_nrf::{bind_interrupts, interrupt, pac, rng, saadc};
 use nrf_sdc::mpsl::MultiprotocolServiceLayer;
 use nrf_sdc::{self as sdc, mpsl};
 use static_cell::StaticCell;
@@ -26,6 +27,7 @@ use crate::motor::Motor;
 
 bind_interrupts!(struct Irqs {
     RNG => rng::InterruptHandler<RNG>;
+    SAADC => saadc::InterruptHandler;
     EGU0_SWI0 => mpsl::LowPrioInterruptHandler;
     CLOCK_POWER => mpsl::ClockInterruptHandler;
     RADIO => mpsl::HighPrioInterruptHandler;
@@ -37,8 +39,9 @@ bind_interrupts!(struct Irqs {
 const L2CAP_TXQ: u8 = 3;
 const L2CAP_RXQ: u8 = 3;
 
-/// SoftDevice Controller memory for one central link with the buffers above.
-const SDC_MEM_SIZE: usize = 5376;
+/// SoftDevice Controller memory for one central link with the buffers above. The controller checks
+/// this at startup and logs the size it needs if the configuration changes.
+const SDC_MEM_SIZE: usize = 4904;
 
 #[embassy_executor::task]
 async fn mpsl_task(mpsl: &'static MultiprotocolServiceLayer<'static>) -> ! {
@@ -83,6 +86,20 @@ async fn main(spawner: Spawner) {
     let button_b = Input::new(p.P0_23, Pull::None);
     spawner.spawn(unwrap!(buttons::hold_to_run(button_a, Motor::A)));
     spawner.spawn(unwrap!(buttons::hold_to_run(button_b, Motor::C)));
+
+    // The microphone is powered from P0.20 (which also lights the microphone LED) and read on
+    // P0.05 (AIN3). Its signal is small, so the SAADC runs at gain 4, as in CODAL.
+    let mic_power = Output::new(p.P0_20, Level::High, OutputDrive::HighDrive);
+    let mut mic_channel = saadc::ChannelConfig::single_ended(p.P0_05);
+    mic_channel.gain = saadc::Gain::Gain4;
+    let mic = saadc::Saadc::new(p.SAADC, Irqs, saadc::Config::default(), [mic_channel]);
+    interrupt::SAADC.set_priority(Priority::P2);
+    let clock = clap::SampleClock {
+        timer: p.TIMER1,
+        sample_ppi: p.PPI_CH0,
+        restart_ppi: p.PPI_CH1,
+    };
+    spawner.spawn(unwrap!(clap::toggle_on_clap(mic, mic_power, clock, Motor::B)));
 
     ble::run(sdc, device_address()).await
 }

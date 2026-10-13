@@ -3,7 +3,7 @@
 //! The cube exposes the Nordic UART Service (NUS); commands are ASCII strings written to the
 //! service's RX characteristic.
 
-use embassy_futures::select::{Either, select};
+use embassy_futures::select::{Either, Either3, select, select3};
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Timer, with_timeout};
@@ -52,7 +52,7 @@ pub async fn run(controller: Controller<'_>, address: Address) -> ! {
         let mut speeds = [0i16; Motor::ALL.len()];
         loop {
             match connect_and_drive(&stack, &mut central, &finder, &mut speeds).await {
-                Ok(()) => defmt::info!("disconnected"),
+                Ok(()) => {}
                 Err(e) => defmt::warn!("connection ended: {:?}", e),
             }
             Timer::after(RETRY_DELAY).await;
@@ -89,8 +89,41 @@ async fn connect_and_drive(
     defmt::info!("connected");
 
     let client = GattClient::<_, DefaultPacketPool, SERVICES_MAX>::new(stack, &conn).await?;
-    match select(client.task(), drive(&client, speeds)).await {
-        Either::First(r) | Either::Second(r) => r,
+    match select3(client.task(), drive(&client, speeds), handle_events(stack, &conn)).await {
+        Either3::First(r) | Either3::Second(r) | Either3::Third(r) => r,
+    }
+}
+
+/// Responds to connection events until the link drops.
+///
+/// The cube asks for new connection parameters shortly after connecting. Every such request must
+/// be answered: one left unanswered times out after 30 s and the cube disconnects.
+async fn handle_events(
+    stack: &Stack<'_, Controller<'_>, DefaultPacketPool>,
+    conn: &Connection<'_, DefaultPacketPool>,
+) -> Result<(), Error> {
+    loop {
+        match conn.next().await {
+            ConnectionEvent::Disconnected { reason } => {
+                defmt::info!("disconnected: {:?}", reason);
+                return Ok(());
+            }
+            ConnectionEvent::RequestConnectionParams(request) => {
+                defmt::info!("cube requested connection params {:?}", request.params());
+                request.accept(None, stack).await?;
+            }
+            ConnectionEvent::ConnectionParamsUpdated {
+                conn_interval,
+                peripheral_latency,
+                supervision_timeout,
+            } => defmt::info!(
+                "connection params: interval {} ms, latency {}, timeout {} ms",
+                conn_interval.as_millis(),
+                peripheral_latency,
+                supervision_timeout.as_millis()
+            ),
+            _ => {}
+        }
     }
 }
 

@@ -6,7 +6,8 @@ edition = "2024"
 [dependencies]
 embassy-executor = { version = "0.10", default-features = false, features = ["platform-cortex-m", "executor-thread", "defmt"] }
 embassy-time = { version = "0.5.1", default-features = false, features = ["defmt", "defmt-timestamp-uptime"] }
-embassy-nrf = { version = "0.11", default-features = false, features = ["nrf52833", "defmt", "time-driver-rtc1", "gpiote", "unstable-pac", "rt"] }
+# The micro:bit routes P0.09/P0.10 to the edge connector, so they are GPIO rather than NFC.
+embassy-nrf = { version = "0.11", default-features = false, features = ["nrf52833", "defmt", "time-driver-rtc1", "gpiote", "unstable-pac", "rt", "nfc-pins-as-gpio"] }
 embassy-futures = "0.1.2"
 embassy-sync = { version = "0.8", features = ["defmt"] }
 

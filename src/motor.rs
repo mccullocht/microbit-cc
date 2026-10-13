@@ -5,6 +5,8 @@
 //! backed by a [`Signal`], so only the latest speed is kept: a burst of input changes collapses
 //! into one command and a "stop" can never be lost behind a full queue.
 
+use core::sync::atomic::{AtomicI16, Ordering};
+
 use embassy_futures::select::select_array;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
@@ -71,18 +73,26 @@ impl Command {
 /// Latest requested speed for each motor, waiting to be sent to the cube.
 pub struct MotorState {
     pending: [Signal<CriticalSectionRawMutex, i16>; Motor::ALL.len()],
+    requested: [AtomicI16; Motor::ALL.len()],
 }
 
 impl MotorState {
     pub const fn new() -> Self {
         Self {
             pending: [const { Signal::new() }; Motor::ALL.len()],
+            requested: [const { AtomicI16::new(0) }; Motor::ALL.len()],
         }
     }
 
     /// Requests a new speed for `motor`, replacing any request that has not been sent yet.
     pub fn set(&self, motor: Motor, speed: i16) {
+        self.requested[motor.index()].store(speed, Ordering::Relaxed);
         self.pending[motor.index()].signal(speed);
+    }
+
+    /// The speed most recently requested for `motor`, whether or not it has been sent yet.
+    pub fn requested(&self, motor: Motor) -> i16 {
+        self.requested[motor.index()].load(Ordering::Relaxed)
     }
 
     /// Waits for the next speed request on any motor.
