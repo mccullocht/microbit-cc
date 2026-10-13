@@ -4,3 +4,27 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+embassy-executor = { version = "0.10", default-features = false, features = ["platform-cortex-m", "executor-thread", "defmt"] }
+embassy-time = { version = "0.5.1", default-features = false, features = ["defmt", "defmt-timestamp-uptime"] }
+embassy-nrf = { version = "0.11", default-features = false, features = ["nrf52833", "defmt", "time-driver-rtc1", "gpiote", "unstable-pac", "rt"] }
+embassy-futures = "0.1.2"
+embassy-sync = { version = "0.8", features = ["defmt"] }
+
+# Both roles select the multirole controller library; the central-only one lacks the extended
+# scanning commands that trouble-host references.
+nrf-sdc = { version = "0.4", default-features = false, features = ["nrf52833", "defmt", "central", "peripheral"] }
+nrf-mpsl = { version = "0.4", default-features = false, features = ["defmt", "critical-section-impl"] }
+trouble-host = { version = "0.8", default-features = false, features = ["defmt", "central", "scan", "gatt", "default-packet-pool"] }
+
+defmt = "1.0"
+defmt-rtt = "1.0"
+panic-probe = { version = "1.0", features = ["print-defmt"] }
+
+cortex-m = "0.7.7"
+cortex-m-rt = "0.7.5"
+static_cell = "2"
+
+[profile.release]
+debug = 2
+lto = true
+opt-level = "s"
