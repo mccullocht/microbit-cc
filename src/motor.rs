@@ -95,6 +95,14 @@ impl MotorState {
         self.requested[motor.index()].load(Ordering::Relaxed)
     }
 
+    /// Stops `motor` if it was requested to run, otherwise runs it at `speed`. Returns the new
+    /// requested speed.
+    pub fn toggle(&self, motor: Motor, speed: i16) -> i16 {
+        let next = if self.requested(motor) == 0 { speed } else { 0 };
+        self.set(motor, next);
+        next
+    }
+
     /// Waits for the next speed request on any motor.
     pub async fn changed(&self) -> Command {
         let (speed, i) = select_array(self.pending.each_ref().map(|s| s.wait())).await;

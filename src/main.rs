@@ -1,22 +1,27 @@
 //! micro:bit v2 remote for a Tenka Circuit Cube.
 //!
-//! Holding button A runs motor b; holding button B runs motor c. Clapping toggles motor b.
+//! Holding button A runs motor a; holding button B runs motor c. Touching the logo toggles
+//! motor b.
+//! The LED matrix shows which way the board is tilted.
 
 #![no_std]
 #![no_main]
 
 mod ble;
 mod buttons;
-mod clap;
+mod display;
 mod motor;
+mod tilt;
+mod touch;
 
 use defmt::unwrap;
 use embassy_executor::Spawner;
-use embassy_nrf::gpio::{Input, Level, Output, OutputDrive, Pull};
+use embassy_nrf::Peri;
+use embassy_nrf::gpio::{AnyPin, Input, Level, Output, OutputDrive, Pull};
 use embassy_nrf::interrupt::{InterruptExt, Priority};
 use embassy_nrf::mode::Async;
-use embassy_nrf::peripherals::RNG;
-use embassy_nrf::{bind_interrupts, interrupt, pac, rng, saadc};
+use embassy_nrf::peripherals::{RNG, TWISPI0};
+use embassy_nrf::{bind_interrupts, interrupt, pac, rng, twim};
 use nrf_sdc::mpsl::MultiprotocolServiceLayer;
 use nrf_sdc::{self as sdc, mpsl};
 use static_cell::StaticCell;
@@ -27,7 +32,7 @@ use crate::motor::Motor;
 
 bind_interrupts!(struct Irqs {
     RNG => rng::InterruptHandler<RNG>;
-    SAADC => saadc::InterruptHandler;
+    TWISPI0 => twim::InterruptHandler<TWISPI0>;
     EGU0_SWI0 => mpsl::LowPrioInterruptHandler;
     CLOCK_POWER => mpsl::ClockInterruptHandler;
     RADIO => mpsl::HighPrioInterruptHandler;
@@ -87,19 +92,46 @@ async fn main(spawner: Spawner) {
     spawner.spawn(unwrap!(buttons::hold_to_run(button_a, Motor::A)));
     spawner.spawn(unwrap!(buttons::hold_to_run(button_b, Motor::C)));
 
-    // The microphone is powered from P0.20 (which also lights the microphone LED) and read on
-    // P0.05 (AIN3). Its signal is small, so the SAADC runs at gain 4, as in CODAL.
-    let mic_power = Output::new(p.P0_20, Level::High, OutputDrive::HighDrive);
-    let mut mic_channel = saadc::ChannelConfig::single_ended(p.P0_05);
-    mic_channel.gain = saadc::Gain::Gain4;
-    let mic = saadc::Saadc::new(p.SAADC, Irqs, saadc::Config::default(), [mic_channel]);
-    interrupt::SAADC.set_priority(Priority::P2);
-    let clock = clap::SampleClock {
-        timer: p.TIMER1,
-        sample_ppi: p.PPI_CH0,
-        restart_ppi: p.PPI_CH1,
+    // LED matrix: rows (anodes) top to bottom, columns (cathodes) left to right, all off.
+    let led_row = |pin: Peri<'static, AnyPin>| Output::new(pin, Level::Low, OutputDrive::Standard);
+    let led_col = |pin: Peri<'static, AnyPin>| Output::new(pin, Level::High, OutputDrive::Standard);
+    let rows = [
+        led_row(p.P0_21.into()),
+        led_row(p.P0_22.into()),
+        led_row(p.P0_15.into()),
+        led_row(p.P0_24.into()),
+        led_row(p.P0_19.into()),
+    ];
+    let cols = [
+        led_col(p.P0_28.into()),
+        led_col(p.P0_11.into()),
+        led_col(p.P0_31.into()),
+        led_col(p.P1_05.into()),
+        led_col(p.P0_30.into()),
+    ];
+    spawner.spawn(unwrap!(display::run(rows, cols)));
+
+    // The accelerometer is on the internal I2C bus (SDA P0.16, SCL P0.08), which has its own
+    // pull-ups.
+    static I2C_TX_BUF: StaticCell<[u8; 16]> = StaticCell::new();
+    let i2c = twim::Twim::new(
+        p.TWISPI0,
+        Irqs,
+        p.P0_16,
+        p.P0_08,
+        twim::Config::default(),
+        I2C_TX_BUF.init([0; 16]),
+    );
+    interrupt::TWISPI0.set_priority(Priority::P2);
+    spawner.spawn(unwrap!(tilt::run(i2c)));
+
+    let logo = touch::TouchSensor {
+        pin: p.P1_04.into(),
+        gpiote: p.GPIOTE_CH0,
+        ppi: p.PPI_CH2,
+        timer: p.TIMER2,
     };
-    spawner.spawn(unwrap!(clap::toggle_on_clap(mic, mic_power, clock, Motor::B)));
+    spawner.spawn(unwrap!(touch::toggle_on_touch(logo, Motor::B)));
 
     ble::run(sdc, device_address()).await
 }
