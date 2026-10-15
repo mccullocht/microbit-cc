@@ -3,11 +3,12 @@
 //! Tilt control is on only while button A or B is held; otherwise the motors are stopped and the
 //! display shows a lock (its whole outer edge lit).
 //!
-//! While it's on, with the board held flat and face up, tilting 20–40° in any direction lights the
-//! edge on that side, and tilting further shows a chevron pointing that way. The tilt also drives a pair of
-//! left and right motors, at half speed for a slight tilt and full speed for a steep one:
-//! forward or back runs both that way, and tilting left or right spins them in opposite
-//! directions to turn that way. Level stops them.
+//! While it's on, with the board held flat and face up, the display shows a wedge growing from
+//! the center towards the lower side: tilting 20–40° lights the row (or column) next to the
+//! center, and tilting further also lights the edge. The tilt also drives a pair of left and
+//! right motors, at half speed for a slight tilt and full speed for a steep one: forward or back
+//! runs both that way, and tilting left or right spins them in opposite directions to turn that
+//! way. Level stops them.
 //!
 //! A still board's acceleration is just gravity, so the tilt along an axis is asin(a / |a|). The
 //! thresholds below are compared as sines, squared, so no trigonometry or square roots are needed.
@@ -32,13 +33,13 @@ const SMOOTHING: f32 = 0.3;
 /// Motor speed for a slight tilt; a steep tilt runs at `MAX_SPEED`.
 const SLIGHT_SPEED: i16 = 128;
 
-/// sin 20° and sin 40°: tilts that light an edge and show an arrow.
-const EDGE_ON: f32 = 0.342;
-const ARROW_ON: f32 = 0.643;
-/// sin 17° and sin 37°: once shown, an edge or arrow stays until the tilt drops below these, so
+/// sin 20° and sin 40°: tilts that count as slight and steep.
+const SLIGHT_ON: f32 = 0.342;
+const STEEP_ON: f32 = 0.643;
+/// sin 17° and sin 37°: once reached, a slight or steep tilt stays until it drops below these, so
 /// the display doesn't flicker at a threshold.
-const EDGE_OFF: f32 = 0.292;
-const ARROW_OFF: f32 = 0.602;
+const SLIGHT_OFF: f32 = 0.292;
+const STEEP_OFF: f32 = 0.602;
 /// When tilted diagonally, the other axis must be this much steeper to change direction.
 const SWITCH_RATIO: f32 = 1.25;
 
@@ -84,14 +85,14 @@ impl Tilt {
         use Direction::*;
         match self {
             Tilt::Level => Image::from_rows([0, 0, 0b00100, 0, 0]),
-            Tilt::Slight(Forward) => Image::from_rows([0b11111, 0, 0, 0, 0]),
-            Tilt::Slight(Back) => Image::from_rows([0, 0, 0, 0, 0b11111]),
-            Tilt::Slight(Left) => Image::from_rows([0b10000; 5]),
-            Tilt::Slight(Right) => Image::from_rows([0b00001; 5]),
-            Tilt::Steep(Forward) => Image::from_rows([0, 0b00100, 0b01010, 0, 0]),
-            Tilt::Steep(Back) => Image::from_rows([0, 0, 0b01010, 0b00100, 0]),
-            Tilt::Steep(Left) => Image::from_rows([0, 0b00100, 0b01000, 0b00100, 0]),
-            Tilt::Steep(Right) => Image::from_rows([0, 0b00100, 0b00010, 0b00100, 0]),
+            Tilt::Slight(Forward) => Image::from_rows([0, 0b01110, 0b00100, 0, 0]),
+            Tilt::Slight(Back) => Image::from_rows([0, 0, 0b00100, 0b01110, 0]),
+            Tilt::Slight(Left) => Image::from_rows([0, 0b01000, 0b01100, 0b01000, 0]),
+            Tilt::Slight(Right) => Image::from_rows([0, 0b00010, 0b00110, 0b00010, 0]),
+            Tilt::Steep(Forward) => Image::from_rows([0b11111, 0b01110, 0b00100, 0, 0]),
+            Tilt::Steep(Back) => Image::from_rows([0, 0, 0b00100, 0b01110, 0b11111]),
+            Tilt::Steep(Left) => Image::from_rows([0b10000, 0b11000, 0b11100, 0b11000, 0b10000]),
+            Tilt::Steep(Right) => Image::from_rows([0b00001, 0b00011, 0b00111, 0b00011, 0b00001]),
         }
     }
 }
@@ -269,13 +270,13 @@ impl Vector {
         };
 
         let same = prev.direction() == Some(direction);
-        let arrow = if same && matches!(prev, Tilt::Steep(_)) { ARROW_OFF } else { ARROW_ON };
-        let edge = if same { EDGE_OFF } else { EDGE_ON };
+        let steep = if same && matches!(prev, Tilt::Steep(_)) { STEEP_OFF } else { STEEP_ON };
+        let slight = if same { SLIGHT_OFF } else { SLIGHT_ON };
         // |component| / |a| >= sin θ, squared.
         let exceeds = |sin: f32| component * component >= sin * sin * magnitude_sq;
-        if exceeds(arrow) {
+        if exceeds(steep) {
             Tilt::Steep(direction)
-        } else if exceeds(edge) {
+        } else if exceeds(slight) {
             Tilt::Slight(direction)
         } else {
             Tilt::Level
