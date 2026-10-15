@@ -14,7 +14,7 @@ use embassy_nrf::ppi::Ppi;
 use embassy_nrf::timer::{Frequency, Timer};
 use embassy_time::{Duration, Timer as Delay};
 
-use crate::motor::{MAX_SPEED, MOTORS, Motor};
+use crate::motor::{MOTORS, Motor};
 
 /// How long the pin is given to charge, and then to drain.
 const CHARGE_TIME: Duration = Duration::from_millis(1);
@@ -26,6 +26,8 @@ const THRESHOLD: u32 = 3500;
 const NO_EDGE: u32 = u32::MAX;
 /// Consecutive samples (2 ms each) needed to change between touched and released.
 const DEBOUNCE: u8 = 5;
+/// Speed the motor runs at when toggled on.
+const SPEED: i16 = 128;
 
 /// Hardware used to sense the logo.
 pub struct TouchSensor {
@@ -35,7 +37,7 @@ pub struct TouchSensor {
     pub timer: Peri<'static, TIMER2>,
 }
 
-/// Toggles `motor` between stopped and full speed each time the logo is touched.
+/// Toggles `motor` between stopped and `SPEED` each time the logo is touched.
 #[embassy_executor::task]
 pub async fn toggle_on_touch(mut sensor: TouchSensor, motor: Motor) -> ! {
     let timer = Timer::new(sensor.timer.reborrow());
@@ -74,7 +76,7 @@ pub async fn toggle_on_touch(mut sensor: TouchSensor, motor: Motor) -> ! {
                 streak = 0;
                 defmt::debug!("logo {}: {} ticks", if touched { "touched" } else { "released" }, ticks);
                 if touched {
-                    let speed = MOTORS.toggle(motor, MAX_SPEED);
+                    let speed = MOTORS.toggle(motor, SPEED);
                     defmt::info!("logo: motor {} -> {}", motor, speed);
                 }
             }

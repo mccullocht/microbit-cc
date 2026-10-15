@@ -1,7 +1,10 @@
-//! Shows how the board is tilted on the LED matrix, from the LSM303AGR accelerometer.
+//! Tilt control from the LSM303AGR accelerometer.
 //!
-//! With the board held flat and face up, tilting 10–40° in any direction lights the edge on that
-//! side, and tilting further shows a chevron pointing that way.
+//! With the board held flat and face up, tilting 20–40° in any direction lights the edge on that
+//! side, and tilting further shows a chevron pointing that way. The tilt also drives a pair of
+//! left and right motors, at half speed for a slight tilt and full speed for a steep one:
+//! forward or back runs both that way, and tilting left or right spins them in opposite
+//! directions to turn that way. Level stops them.
 //!
 //! A still board's acceleration is just gravity, so the tilt along an axis is asin(a / |a|). The
 //! thresholds below are compared as sines, squared, so no trigonometry or square roots are needed.
@@ -13,6 +16,7 @@ use lsm303agr::mode::MagOneShot;
 use lsm303agr::{AccelMode, AccelOutputDataRate, AccelScale, Lsm303agr};
 
 use crate::display::{self, Image};
+use crate::motor::{MAX_SPEED, MOTORS, Motor};
 
 type Sensor = Lsm303agr<I2cInterface<Twim<'static>>, MagOneShot>;
 type Error = lsm303agr::Error<twim::Error>;
@@ -20,13 +24,15 @@ type Error = lsm303agr::Error<twim::Error>;
 const SAMPLE_PERIOD: Duration = Duration::from_millis(20);
 /// Low-pass filter: each sample moves the smoothed value this fraction of the way towards it.
 const SMOOTHING: f32 = 0.3;
+/// Motor speed for a slight tilt; a steep tilt runs at `MAX_SPEED`.
+const SLIGHT_SPEED: i16 = 128;
 
-/// sin 10° and sin 40°: tilts that light an edge and show an arrow.
-const EDGE_ON: f32 = 0.174;
+/// sin 20° and sin 40°: tilts that light an edge and show an arrow.
+const EDGE_ON: f32 = 0.342;
 const ARROW_ON: f32 = 0.643;
-/// sin 7° and sin 37°: once shown, an edge or arrow stays until the tilt drops below these, so
+/// sin 17° and sin 37°: once shown, an edge or arrow stays until the tilt drops below these, so
 /// the display doesn't flicker at a threshold.
-const EDGE_OFF: f32 = 0.122;
+const EDGE_OFF: f32 = 0.292;
 const ARROW_OFF: f32 = 0.602;
 /// When tilted diagonally, the other axis must be this much steeper to change direction.
 const SWITCH_RATIO: f32 = 1.25;
@@ -54,6 +60,21 @@ impl Tilt {
         }
     }
 
+    /// Speeds for the (left, right) motors; positive is forward.
+    fn speeds(self) -> (i16, i16) {
+        let (direction, speed) = match self {
+            Tilt::Level => return (0, 0),
+            Tilt::Slight(d) => (d, SLIGHT_SPEED),
+            Tilt::Steep(d) => (d, MAX_SPEED),
+        };
+        match direction {
+            Direction::Forward => (speed, speed),
+            Direction::Back => (-speed, -speed),
+            Direction::Left => (-speed, speed),
+            Direction::Right => (speed, -speed),
+        }
+    }
+
     fn image(self) -> Image {
         use Direction::*;
         match self {
@@ -73,9 +94,15 @@ impl Tilt {
 /// Shown if the accelerometer can't be set up.
 const ERROR_IMAGE: Image = Image::from_rows([0b10001, 0b01010, 0b00100, 0b01010, 0b10001]);
 
-/// Reads the accelerometer and keeps the display showing the current tilt.
+/// The motors on each side of the model.
+pub struct Drive {
+    pub left: Motor,
+    pub right: Motor,
+}
+
+/// Reads the accelerometer, keeps the display showing the current tilt, and drives the motors.
 #[embassy_executor::task]
-pub async fn run(i2c: Twim<'static>) -> ! {
+pub async fn run(i2c: Twim<'static>, drive: Drive) -> ! {
     let mut sensor = Lsm303agr::new_with_i2c(i2c);
     if let Err(e) = setup(&mut sensor).await {
         defmt::error!("accelerometer setup failed: {:?}", defmt::Debug2Format(&e));
@@ -107,6 +134,14 @@ pub async fn run(i2c: Twim<'static>) -> ! {
         if next != tilt {
             defmt::info!("tilt: {}", next);
             display::show(next.image());
+            let (left, right) = tilt.speeds();
+            let (next_left, next_right) = next.speeds();
+            if next_left != left {
+                MOTORS.set(drive.left, next_left);
+            }
+            if next_right != right {
+                MOTORS.set(drive.right, next_right);
+            }
             tilt = next;
         }
     }

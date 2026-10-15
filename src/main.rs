@@ -1,6 +1,7 @@
 //! micro:bit v2 remote for a Tenka Circuit Cube.
 //!
-//! Holding button A runs motor a; holding button B runs motor c. Touching the logo toggles
+//! Tilting the board drives motors a (left) and c (right) like a tank: forward and back run both
+//! together, and left and right spin them in opposite directions. Touching the logo toggles
 //! motor b.
 //! The LED matrix shows which way the board is tilted.
 
@@ -8,7 +9,6 @@
 #![no_main]
 
 mod ble;
-mod buttons;
 mod display;
 mod motor;
 mod tilt;
@@ -17,7 +17,7 @@ mod touch;
 use defmt::unwrap;
 use embassy_executor::Spawner;
 use embassy_nrf::Peri;
-use embassy_nrf::gpio::{AnyPin, Input, Level, Output, OutputDrive, Pull};
+use embassy_nrf::gpio::{AnyPin, Level, Output, OutputDrive};
 use embassy_nrf::interrupt::{InterruptExt, Priority};
 use embassy_nrf::mode::Async;
 use embassy_nrf::peripherals::{RNG, TWISPI0};
@@ -86,12 +86,6 @@ async fn main(spawner: Spawner) {
     let mut sdc_mem = sdc::Mem::<SDC_MEM_SIZE>::new();
     let sdc = unwrap!(build_sdc(sdc_p, &mut rng, mpsl, &mut sdc_mem));
 
-    // Buttons A and B have external pull-ups and read low while pressed.
-    let button_a = Input::new(p.P0_14, Pull::None);
-    let button_b = Input::new(p.P0_23, Pull::None);
-    spawner.spawn(unwrap!(buttons::hold_to_run(button_a, Motor::A)));
-    spawner.spawn(unwrap!(buttons::hold_to_run(button_b, Motor::C)));
-
     // LED matrix: rows (anodes) top to bottom, columns (cathodes) left to right, all off.
     let led_row = |pin: Peri<'static, AnyPin>| Output::new(pin, Level::Low, OutputDrive::Standard);
     let led_col = |pin: Peri<'static, AnyPin>| Output::new(pin, Level::High, OutputDrive::Standard);
@@ -123,7 +117,11 @@ async fn main(spawner: Spawner) {
         I2C_TX_BUF.init([0; 16]),
     );
     interrupt::TWISPI0.set_priority(Priority::P2);
-    spawner.spawn(unwrap!(tilt::run(i2c)));
+    let drive = tilt::Drive {
+        left: Motor::A,
+        right: Motor::C,
+    };
+    spawner.spawn(unwrap!(tilt::run(i2c, drive)));
 
     let logo = touch::TouchSensor {
         pin: p.P1_04.into(),
