@@ -1,7 +1,8 @@
 //! micro:bit v2 remote for a Tenka Circuit Cube.
 //!
-//! Tilting the board drives motors a (left) and c (right) like a tank: forward and back run both
-//! together, and left and right spin them in opposite directions. Touching the logo toggles
+//! Holding button A or B turns on tilt control; with neither held the LED matrix shows a lock.
+//! Tilting the board then drives motors a (left) and c (right) like a tank: forward and back run
+//! both together, and left and right spin them in opposite directions. Touching the logo toggles
 //! motor b.
 //! The LED matrix shows which way the board is tilted.
 
@@ -17,7 +18,7 @@ mod touch;
 use defmt::unwrap;
 use embassy_executor::Spawner;
 use embassy_nrf::Peri;
-use embassy_nrf::gpio::{AnyPin, Level, Output, OutputDrive};
+use embassy_nrf::gpio::{AnyPin, Input, Level, Output, OutputDrive, Pull};
 use embassy_nrf::interrupt::{InterruptExt, Priority};
 use embassy_nrf::mode::Async;
 use embassy_nrf::peripherals::{RNG, TWISPI0};
@@ -121,7 +122,12 @@ async fn main(spawner: Spawner) {
         left: Motor::A,
         right: Motor::C,
     };
-    spawner.spawn(unwrap!(tilt::run(i2c, drive)));
+    // Buttons A and B have external pull-ups.
+    let buttons = tilt::Buttons {
+        a: Input::new(p.P0_14, Pull::None),
+        b: Input::new(p.P0_23, Pull::None),
+    };
+    spawner.spawn(unwrap!(tilt::run(i2c, drive, buttons)));
 
     let logo = touch::TouchSensor {
         pin: p.P1_04.into(),

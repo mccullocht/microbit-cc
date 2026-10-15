@@ -1,7 +1,10 @@
 //! Tilt control from the LSM303AGR accelerometer.
 //!
-//! With the board held flat and face up, tilting 20–40° in any direction lights the edge on that
-//! side, and tilting further shows a chevron pointing that way. The tilt also drives a pair of
+//! Tilt control is on only while button A or B is held; otherwise the motors are stopped and the
+//! display shows a lock (its whole outer edge lit).
+//!
+//! While it's on, with the board held flat and face up, tilting 20–40° in any direction lights the
+//! edge on that side, and tilting further shows a chevron pointing that way. The tilt also drives a pair of
 //! left and right motors, at half speed for a slight tilt and full speed for a steep one:
 //! forward or back runs both that way, and tilting left or right spins them in opposite
 //! directions to turn that way. Level stops them.
@@ -9,6 +12,8 @@
 //! A still board's acceleration is just gravity, so the tilt along an axis is asin(a / |a|). The
 //! thresholds below are compared as sines, squared, so no trigonometry or square roots are needed.
 
+use embassy_futures::select::select;
+use embassy_nrf::gpio::Input;
 use embassy_nrf::twim::{self, Twim};
 use embassy_time::{Delay, Duration, Ticker};
 use lsm303agr::interface::I2cInterface;
@@ -91,8 +96,13 @@ impl Tilt {
     }
 }
 
+/// Shown while no button is held and tilt control is off.
+const LOCK_IMAGE: Image = Image::from_rows([0b11111, 0b10001, 0b10001, 0b10001, 0b11111]);
 /// Shown if the accelerometer can't be set up.
 const ERROR_IMAGE: Image = Image::from_rows([0b10001, 0b01010, 0b00100, 0b01010, 0b10001]);
+/// Consecutive samples with both buttons up before tilt control turns off, so contact bounce on
+/// release doesn't turn it straight back on.
+const RELEASE_SAMPLES: u8 = 3;
 
 /// The motors on each side of the model.
 pub struct Drive {
@@ -100,9 +110,40 @@ pub struct Drive {
     pub right: Motor,
 }
 
-/// Reads the accelerometer, keeps the display showing the current tilt, and drives the motors.
+impl Drive {
+    /// Sends the speed changes needed to go from `from` to `to`.
+    fn change(&self, from: Tilt, to: Tilt) {
+        let (left, right) = from.speeds();
+        let (next_left, next_right) = to.speeds();
+        if next_left != left {
+            MOTORS.set(self.left, next_left);
+        }
+        if next_right != right {
+            MOTORS.set(self.right, next_right);
+        }
+    }
+}
+
+/// Buttons A and B, which read low while pressed.
+pub struct Buttons {
+    pub a: Input<'static>,
+    pub b: Input<'static>,
+}
+
+impl Buttons {
+    async fn wait_for_either(&mut self) {
+        select(self.a.wait_for_low(), self.b.wait_for_low()).await;
+    }
+
+    fn either_held(&self) -> bool {
+        self.a.is_low() || self.b.is_low()
+    }
+}
+
+/// While either button is held, reads the accelerometer, keeps the display showing the current
+/// tilt, and drives the motors. Otherwise the motors are stopped and the display shows a lock.
 #[embassy_executor::task]
-pub async fn run(i2c: Twim<'static>, drive: Drive) -> ! {
+pub async fn run(i2c: Twim<'static>, drive: Drive, mut buttons: Buttons) -> ! {
     let mut sensor = Lsm303agr::new_with_i2c(i2c);
     if let Err(e) = setup(&mut sensor).await {
         defmt::error!("accelerometer setup failed: {:?}", defmt::Debug2Format(&e));
@@ -111,12 +152,34 @@ pub async fn run(i2c: Twim<'static>, drive: Drive) -> ! {
     }
     defmt::info!("accelerometer ready");
 
+    loop {
+        display::show(LOCK_IMAGE);
+        buttons.wait_for_either().await;
+        defmt::info!("tilt control on");
+        drive_while_held(&mut sensor, &drive, &buttons).await;
+        defmt::info!("tilt control off");
+    }
+}
+
+/// Drives the motors from the tilt until both buttons are released, then stops them.
+async fn drive_while_held(sensor: &mut Sensor, drive: &Drive, buttons: &Buttons) {
     let mut tilt = Tilt::Level;
     display::show(tilt.image());
     let mut smoothed: Option<Vector> = None;
+    let mut released = 0;
     let mut ticker = Ticker::every(SAMPLE_PERIOD);
     loop {
         ticker.next().await;
+        if buttons.either_held() {
+            released = 0;
+        } else {
+            released += 1;
+            if released >= RELEASE_SAMPLES {
+                drive.change(tilt, Tilt::Level);
+                return;
+            }
+        }
+
         let sample = match sensor.acceleration().await {
             Ok(a) => Vector::from_sensor(a.x_mg(), a.y_mg(), a.z_mg()),
             Err(e) => {
@@ -134,14 +197,7 @@ pub async fn run(i2c: Twim<'static>, drive: Drive) -> ! {
         if next != tilt {
             defmt::info!("tilt: {}", next);
             display::show(next.image());
-            let (left, right) = tilt.speeds();
-            let (next_left, next_right) = next.speeds();
-            if next_left != left {
-                MOTORS.set(drive.left, next_left);
-            }
-            if next_right != right {
-                MOTORS.set(drive.right, next_right);
-            }
+            drive.change(tilt, next);
             tilt = next;
         }
     }
